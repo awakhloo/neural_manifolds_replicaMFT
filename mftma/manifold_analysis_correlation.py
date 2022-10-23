@@ -11,9 +11,10 @@ from scipy.linalg import qr
 from functools import partial
 
 from cvxopt import solvers, matrix
+import pymanopt
 from pymanopt.manifolds import Stiefel
 from pymanopt import Problem
-from pymanopt.solvers import ConjugateGradient
+from pymanopt.optimizers import ConjugateGradient
 
 # Configure cvxopt solvers
 solvers.options['show_progress'] = False
@@ -351,10 +352,10 @@ def fun_FA(centers, maxK, max_iter, n_repeats, s_all=None, verbose=False, conjug
             V0, _ = qr(V0.T, mode='economic') # (P-1, i)
 
             # Compute the optimal V for this i
-            V1tmp, output = CGmanopt(V0, partial(square_corrcoeff_full_cost, grad=False), X, **opts)
+            V1tmp, output = CGmanopt(V0, square_corrcoeff_full_cost, X, **opts)
 
             # Compute the cost
-            cost_after, _ = square_corrcoeff_full_cost(V1tmp, X, grad=False)
+            cost_after = square_corrcoeff_full_cost(V1tmp, X)
 
             # Verify that the solution is orthogonal within tolerance
             assert np.linalg.norm(np.matmul(V1tmp.T, V1tmp) - np.identity(i), ord='fro') < 1e-10
@@ -424,16 +425,17 @@ def CGmanopt(X, objective_function, A, **kwargs):
     '''
 
     manifold = Stiefel(X.shape[0], X.shape[1])
+    @pymanopt.function.autograd(manifold)
     def cost(X):
-        c, _ = objective_function(X, A)
+        c = objective_function(X, A)
         return c
-    problem = Problem(manifold=manifold, cost=cost, verbosity=0)
-    solver = ConjugateGradient(logverbosity=0)
-    Xopt = solver.solve(problem)
+    problem = Problem(manifold=manifold, cost=cost)
+    solver = ConjugateGradient(verbosity=0)
+    Xopt = solver.run(problem).point
     return Xopt, None
 
 
-def square_corrcoeff_full_cost(V, X, grad=True):
+def square_corrcoeff_full_cost(V, X):
     '''
     The cost function for the correlation analysis. This effectively measures the square difference
     in correlation coefficients after transforming to an orthonormal basis given by V.
@@ -454,26 +456,7 @@ def square_corrcoeff_full_cost(V, X, grad=True):
     c0 = np.diagonal(C).reshape(P, 1) - np.sum(np.square(c), axis=1, keepdims=True)
     Fmn = np.square(C - np.matmul(c, c.T))/np.matmul(c0, c0.T)
     cost = np.sum(Fmn)/2
-
-    if grad is False:  # skip gradient calc since not needed, or autograd is used
-        gradient = None
-    else:
-        # Calculate the gradient
-        X1 = np.reshape(X, [1, P, N, 1])
-        X2 = np.reshape(X, [P, 1, N, 1])
-        C1 = np.reshape(c, [P, 1, 1, K])
-        C2 = np.reshape(c, [1, P, 1, K])
-
-        # Sum the terms in the gradient
-        PF1 = ((C - np.matmul(c, c.T))/np.matmul(c0, c0.T)).reshape(P, P, 1, 1) 
-        PF2 = (np.square(C - np.matmul(c, c.T))/np.square(np.matmul(c0, c0.T))).reshape(P, P, 1, 1)
-        Gmni = - PF1 * C1 * X1
-        Gmni += - PF1 * C2 * X2
-        Gmni +=  PF2 * c0.reshape(P, 1, 1, 1) * C2 * X1
-        Gmni += PF2 * (c0.T).reshape(1, P, 1, 1) * C1 * X2
-        gradient = np.sum(Gmni, axis=(0, 1))
-
-    return cost, gradient
+    return cost
 
 
 def MGramSchmidt(V):
